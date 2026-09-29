@@ -133,17 +133,21 @@ const options = (map, sel) => Object.entries(map).map(([k, v]) => html`<option v
 
 // ============================================================ API
 class LoginRequired extends Error {}
+class SetupRequired extends Error {}
 async function api(url, opts = {}) {
   const init = { method: opts.method || 'GET', headers: {} };
   if (opts.body !== undefined) { init.body = JSON.stringify(opts.body); init.headers['Content-Type'] = 'application/json'; }
   let res;
   try { res = await fetch(url, init); }
-  catch { throw new Error('Sunucuya ulaşılamadı. Bilgisayardaki programın açık olduğundan emin olun.'); }
+  catch { throw new Error('Sunucuya ulaşılamadı. İnternet bağlantını ya da programın açık olduğunu kontrol et.'); }
   if (res.status === 401 && url !== '/api/login') throw new LoginRequired();
   const data = await res.json().catch(() => ({}));
+  if (res.status === 503 && data.setup) throw new SetupRequired(data.error);
   if (!res.ok) throw new Error(data.error || `Hata (${res.status})`);
   return data;
 }
+let info = null;
+const getInfo = async () => (info ??= await api('/api/info'));
 
 const cache = { items: null };
 async function getItems(force = false) {
@@ -163,7 +167,11 @@ function toast(msg, err = false) {
   $('#toasts').append(el);
   setTimeout(() => el.remove(), err ? 4500 : 2400);
 }
-const fail = (e) => { if (e instanceof LoginRequired) return viewLogin(); console.error(e); toast(e.message, true); };
+const fail = (e) => {
+  if (e instanceof LoginRequired) return viewLogin();
+  if (e instanceof SetupRequired) return viewSetup(e.message);
+  console.error(e); toast(e.message, true);
+};
 
 function openModal({ title, body, foot, wide, onMount }) {
   const root = $('#modal-root');
@@ -206,7 +214,8 @@ function thumb(item, size) {
 
 const empty = (ic, text, action = '') => html`<div class="empty">${icon(ic)}<div>${text}</div>${action ? html`<div style="margin-top:14px">${action}</div>` : ''}</div>`;
 
-function mvRow(m, showItem = true) {
+const UNDOABLE = ['giris', 'satis', 'cikis', 'duzeltme', 'iade'];
+function mvRow(m, showItem = true, undo = false) {
   const k = MOVE[m.kind] || { label: m.kind, icon: 'history', cls: '' };
   const style = k.cls ? `background:var(--${k.cls}-soft);color:var(--${k.cls})` : 'background:var(--surface-2);color:var(--text-2)';
   const amount = m.kind === 'satis' || m.kind === 'tamir' ? Math.abs(m.qty) * m.unit_price : (m.kind === 'giris' || m.kind === 'olusturma') ? m.qty * m.unit_price : 0;
@@ -215,7 +224,8 @@ function mvRow(m, showItem = true) {
   const inner = html`<div class="mv-icon" style="${style}">${icon(k.icon)}</div>
     <div class="grow"><div class="title">${title}</div><div class="meta">${meta}</div></div>
     <div class="right"><div class="mv-qty ${m.qty > 0 ? 'pos' : m.qty < 0 ? 'neg' : ''}">${m.qty > 0 ? '+' : ''}${fmtNum(m.qty)}</div>
-    ${amount ? html`<div class="small muted nowrap">${fmtMoney(amount)}</div>` : ''}</div>`;
+    ${amount ? html`<div class="small muted nowrap">${fmtMoney(amount)}</div>` : ''}</div>
+    ${undo && UNDOABLE.includes(m.kind) ? html`<button class="btn sm icon ghost" data-undo="${m.id}" title="Geri al" aria-label="Bu hareketi geri al">${icon('undo')}</button>` : ''}`;
   if (m.kind === 'tamir' && m.repair_id) return html`<a class="row" href="#/tamir/${m.repair_id}">${inner}</a>`;
   return showItem && m.item_id ? html`<a class="row" href="#/urun/${m.item_id}">${inner}</a>` : html`<div class="row">${inner}</div>`;
 }
@@ -264,6 +274,7 @@ const ROUTES = [
   [/^\/tamir\/yeni$/, viewRepairForm],
   [/^\/tamir\/(\d+)$/, viewRepair],
   [/^\/tamir\/(\d+)\/duzenle$/, viewRepairForm],
+  [/^\/tamir\/(\d+)\/fis$/, viewReceipt],
   [/^\/hareketler$/, viewMovements],
   [/^\/ayarlar$/, viewSettings],
   [/^\/etiket$/, viewLabels],
@@ -287,7 +298,7 @@ async function render() {
   fab.href = onRepair ? '#/tamir/yeni' : '#/urun/yeni';
   fab.setAttribute('aria-label', onRepair ? 'Yeni tamir kaydı' : 'Yeni ürün ekle');
   fab.innerHTML = String(icon('plus'));
-  fab.classList.toggle('hidden', /\/(yeni|duzenle)$/.test(path) || path === '/etiket' || path === '/ayarlar');
+  fab.classList.toggle('hidden', /\/(yeni|duzenle|fis)$/.test(path) || path === '/etiket' || path === '/ayarlar');
 
   const r = ROUTES.find(([re]) => re.test(path));
   if (!r) { app.innerHTML = String(empty('alert', 'Sayfa bulunamadı', html`<a class="btn" href="#/">Panele dön</a>`)); return; }
@@ -300,17 +311,34 @@ async function render() {
   try { await r[1](ctx); }
   catch (e) {
     if (e instanceof LoginRequired) return viewLogin();
+    if (e instanceof SetupRequired) return viewSetup(e.message);
     console.error(e);
     ctx.mount(empty('alert', e.message, html`<button class="btn" onclick="location.reload()">Yeniden dene</button>`));
   }
 }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 
-// ============================================================ giriş
-function viewLogin() {
+// ============================================================ giriş & kurulum
+function bareScreen() {
   seq++;
   $('#nav').innerHTML = $('#tabbar').innerHTML = '';
   $('.fab')?.classList.add('hidden');
+  $('#modal-root').innerHTML = '';
+}
+
+function viewSetup(message) {
+  bareScreen();
+  app.innerHTML = String(html`<div class="login" style="max-width:460px;text-align:left">
+    <img src="/icon.svg" width="56" height="56" alt="" style="margin:0 0 16px">
+    <h1 style="margin-bottom:10px">Kurulum tamamlanmadı</h1>
+    <div class="note-box" style="margin-bottom:14px">${message}</div>
+    <p class="muted small" style="margin:0 0 16px">Değişikliği Vercel'de yaptıktan sonra projeyi yeniden dağıt (Deployments → Redeploy) ve bu sayfayı yenile.</p>
+    <button class="btn primary" onclick="location.reload()">Yenile</button>
+  </div>`);
+}
+
+function viewLogin() {
+  bareScreen();
   app.innerHTML = String(html`<form class="login" id="login">
     <img src="/icon.svg" width="64" height="64" alt="">
     <h1>Roy Envanter</h1>
@@ -321,12 +349,92 @@ function viewLogin() {
   f.pin.focus();
   f.addEventListener('submit', async (e) => {
     e.preventDefault();
-    try { await api('/api/login', { method: 'POST', body: { pin: f.pin.value } }); render(); }
+    try { await api('/api/login', { method: 'POST', body: { pin: f.pin.value } }); info = null; render(); }
     catch (err) { toast(err.message, true); f.pin.select(); }
   });
 }
 
 // ============================================================ panel
+const moneyShort = new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', notation: 'compact', maximumFractionDigits: 1 });
+const SERIES = [
+  { key: 'sales_profit', label: 'Satış kârı', color: 'var(--c-sales)' },
+  { key: 'repair_profit', label: 'Tamir kârı', color: 'var(--c-repair)' },
+];
+const monthLabel = (ym, long = false) => new Date(ym + '-15').toLocaleDateString('tr-TR', long ? { month: 'long', year: 'numeric' } : { month: 'short' });
+
+function niceStep(span) {
+  const raw = span / 4 || 1;
+  const p = 10 ** Math.floor(Math.log10(raw));
+  return [1, 2, 2.5, 5, 10].map((m) => m * p).find((s) => s >= raw);
+}
+
+// Aylık kâr: iki seri gruplu çubuk (tek eksen). Çubuk ucu 4px yuvarlak, taban düz.
+function trendChart(trend) {
+  const W = 640, H = 230, L = 58, R = 8, T = 22, B = 26;
+  const vals = trend.flatMap((t) => SERIES.map((s) => t[s.key]));
+  const hasData = vals.some((v) => v !== 0);
+  const step = niceStep(Math.max(...vals, 0) - Math.min(...vals, 0));
+  const top = Math.max(step, Math.ceil(Math.max(...vals, 0) / step) * step);
+  const bottom = Math.min(0, Math.floor(Math.min(...vals, 0) / step) * step);
+  const y = (v) => T + ((top - v) / (top - bottom)) * (H - T - B);
+  const gw = (W - L - R) / trend.length;
+  const bw = Math.min(26, (gw - 20) / 2);
+  const bar = (x, v) => {
+    const y0 = y(0), y1 = y(v), h = Math.abs(y0 - y1);
+    if (h < 0.5) return '';
+    const r = Math.min(4, h, bw / 2);
+    return v >= 0
+      ? `M${x},${y0}V${y1 + r}Q${x},${y1} ${x + r},${y1}H${x + bw - r}Q${x + bw},${y1} ${x + bw},${y1 + r}V${y0}Z`
+      : `M${x},${y0}V${y1 - r}Q${x},${y1} ${x + r},${y1}H${x + bw - r}Q${x + bw},${y1} ${x + bw},${y1 - r}V${y0}Z`;
+  };
+  const ticks = [];
+  for (let v = bottom; v <= top + 1e-9; v += step) ticks.push(v);
+  const last = trend.length - 1;
+
+  return html`<div class="chart">
+    <div class="chart-legend">${SERIES.map((s) => html`<span><i style="background:${s.color}"></i>${s.label}</span>`)}</div>
+    <div class="chart-wrap">
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Son ${trend.length} ayın satış ve tamir kârı">
+        ${ticks.map((v) => raw(`<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="${v === 0 ? 'axis' : 'gl'}"/>
+          <text x="${L - 8}" y="${y(v) + 4}" text-anchor="end" class="tick">${esc(moneyShort.format(v))}</text>`))}
+        ${trend.map((t, i) => {
+          const gx = L + i * gw + (gw - (bw * 2 + 2)) / 2;
+          return raw(`${SERIES.map((s, j) => `<path d="${bar(gx + j * (bw + 2), t[s.key])}" style="fill:${s.color}"/>`).join('')}
+            <text x="${L + i * gw + gw / 2}" y="${H - 8}" text-anchor="middle" class="tick${i === last ? ' cur' : ''}">${esc(monthLabel(t.month))}</text>            <rect x="${L + i * gw}" y="${T}" width="${gw}" height="${H - T - B}" class="hit" data-i="${i}"/>`);
+        })}
+      </svg>
+      <div class="chart-tip hidden" role="status"></div>
+      ${hasData ? '' : html`<div class="chart-empty">Satış ya da teslim edilen tamir oldukça burada aylık kâr görünecek</div>`}
+    </div>
+    <details class="chart-table"><summary>Tablo olarak göster</summary>
+      <table><thead><tr><th>Ay</th><th>Satış cirosu</th><th>Satış kârı</th><th>Tamir cirosu</th><th>Tamir kârı</th></tr></thead>
+      <tbody>${trend.map((t) => html`<tr><td>${monthLabel(t.month, true)}</td><td>${fmtMoney(t.sales_revenue)}</td><td>${fmtMoney(t.sales_profit)}</td>
+        <td>${fmtMoney(t.repair_revenue)}</td><td>${fmtMoney(t.repair_profit)}</td></tr>`)}</tbody></table>
+    </details>
+  </div>`;
+}
+
+function bindChart(root, trend) {
+  const wrap = $('.chart-wrap', root), tip = $('.chart-tip', root);
+  if (!wrap) return;
+  const hide = () => { tip.classList.add('hidden'); $$('.hit', wrap).forEach((h) => h.classList.remove('on')); };
+  wrap.addEventListener('pointerleave', hide);
+  wrap.addEventListener('pointermove', (e) => {
+    const hit = e.target.closest('.hit');
+    if (!hit) return hide();
+    const t = trend[Number(hit.dataset.i)];
+    $$('.hit', wrap).forEach((h) => h.classList.toggle('on', h === hit));
+    tip.innerHTML = String(html`<b>${monthLabel(t.month, true)}</b>
+      ${SERIES.map((s) => html`<div><i style="background:${s.color}"></i>${s.label}<span>${fmtMoney(t[s.key])}</span></div>`)}
+      <div class="muted"><i></i>Toplam kâr<span>${fmtMoney(t.sales_profit + t.repair_profit)}</span></div>`);
+    tip.classList.remove('hidden');
+    const box = wrap.getBoundingClientRect(), hb = hit.getBoundingClientRect();
+    const left = Math.min(Math.max(hb.left - box.left + hb.width / 2 - tip.offsetWidth / 2, 0), box.width - tip.offsetWidth);
+    tip.style.left = left + 'px';
+    tip.style.top = '0px';
+  });
+}
+
 async function viewDashboard(ctx) {
   ctx.mount(html`<div class="skeleton"></div><div class="skeleton"></div>`);
   const d = await api('/api/dashboard');
@@ -340,7 +448,7 @@ async function viewDashboard(ctx) {
       <a class="btn" href="#/urun/yeni?kind=parca">${icon('part')} Parça ekle</a></div>
     </div>` : '';
 
-  ctx.mount(html`
+  if (!ctx.mount(html`
     <div class="page-head">
       <h1>Panel<div class="sub">${new Date().toLocaleDateString('tr-TR', { weekday: 'long', day: 'numeric', month: 'long' })}</div></h1>
       <div class="btn-row hide-m">
@@ -358,6 +466,10 @@ async function viewDashboard(ctx) {
         <div class="hint">${d.sales.count} satış · kâr ${fmtMoney(d.sales.profit)}</div></a>
       <a class="card stat" href="#/tamir"><div class="label">${monthName} tamirleri</div><div class="value">${fmtMoney(d.repairs.revenue)}</div>
         <div class="hint">${d.repairs.count} teslim · kâr ${fmtMoney(d.repairs.profit)}</div></a>
+    </div>
+    <div class="card" style="margin-bottom:16px" id="trend">
+      <div class="card-head"><h2>Aylık kâr <span class="muted" style="font-weight:400">· son 6 ay</span></h2></div>
+      <div class="card-pad" style="padding-top:12px">${trendChart(d.trend)}</div>
     </div>
     <div class="grid grid-2">
       <div class="card">
@@ -380,7 +492,8 @@ async function viewDashboard(ctx) {
     <div class="card" style="margin-top:16px">
       <div class="card-head"><h2>Son hareketler</h2><a href="#/hareketler">Tümü</a></div>
       <div class="list">${d.recent.length ? d.recent.map((m) => mvRow(m)) : empty('history', 'Henüz hareket yok')}</div>
-    </div>`);
+    </div>`)) return;
+  bindChart($('#trend'), d.trend);
 }
 
 // ============================================================ envanter listesi
@@ -583,12 +696,21 @@ async function viewItem(ctx) {
         </div>` : ''}
         <div class="card">
           <div class="card-head"><h2>Hareket geçmişi</h2></div>
-          <div class="list">${it.movements.length ? it.movements.map((m) => mvRow(m, false)) : empty('history', 'Hareket yok')}</div>
+          <div class="list" id="mv-list">${it.movements.length ? it.movements.map((m) => mvRow(m, false, true)) : empty('history', 'Hareket yok')}</div>
         </div>
       </div>
     </div>`)) return;
 
   $$('[data-move]').forEach((b) => b.addEventListener('click', () => moveModal(it, b.dataset.move)));
+  $('#mv-list').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-undo]');
+    if (!b) return;
+    const m = it.movements.find((x) => x.id === Number(b.dataset.undo));
+    const what = `${MOVE[m.kind].label} (${m.qty > 0 ? '+' : ''}${fmtNum(m.qty)} ${it.unit}, ${fmtDate(m.created_at)})`;
+    if (!(await confirmModal('Hareket geri alınsın mı?', `${what} silinecek ve stok miktarı buna göre düzeltilecek.`, 'Geri al'))) return;
+    try { await api('/api/movements/' + m.id, { method: 'DELETE' }); invalidate(); toast('Hareket geri alındı'); render(); }
+    catch (err) { fail(err); }
+  });
   $('#photo').addEventListener('click', async () => {
     const dataUrl = await pickPhoto();
     if (!dataUrl) return;
@@ -900,6 +1022,7 @@ async function viewRepair(ctx) {
     <div class="page-head">
       <h1>${r.device || 'Tamir kaydı'}<div class="sub"><span class="mono">${r.code}</span> · ${r.customer || 'Müşteri belirtilmedi'}</div></h1>
       <div class="btn-row">
+        <a class="btn" href="#/tamir/${id}/fis">${icon('printer')} <span class="hide-m">Servis fişi</span></a>
         <a class="btn" href="#/tamir/${id}/duzenle">${icon('edit')} <span class="hide-m">Düzenle</span></a>
         <button class="btn icon danger" id="del" aria-label="Sil" title="Sil">${icon('trash')}</button>
       </div>
@@ -957,6 +1080,47 @@ async function viewRepair(ctx) {
     try { await api('/api/repairs/' + id, { method: 'DELETE' }); invalidate(); toast('Tamir kaydı silindi'); go('#/tamir'); }
     catch (e) { fail(e); }
   });
+}
+
+async function viewReceipt(ctx) {
+  const id = Number(ctx.params[0]);
+  const [r, s] = await Promise.all([api('/api/repairs/' + id), api('/api/settings')]);
+  const partsTotal = r.parts.reduce((sum, p) => sum + p.qty * p.unit_price, 0);
+  const total = r.fee + partsTotal;
+  const dd = (label, value, full = false) => html`<div class="${full ? 'full' : ''}"><dt>${label}</dt><dd>${value || '—'}</dd></div>`;
+  ctx.mount(html`
+    <div class="no-print">
+      <a class="back" href="#/tamir/${id}">${icon('back')} Tamir kaydı</a>
+      <div class="page-head"><h1>Servis fişi<div class="sub">Müşteriye cihazı teslim alırken ya da verirken yazdır</div></h1>
+        <div class="btn-row">${!s.shop_name ? html`<a class="btn" href="#/ayarlar">Dükkân bilgisi ekle</a>` : ''}
+        <button class="btn primary" onclick="print()">${icon('printer')} Yazdır</button></div></div>
+    </div>
+    <div class="receipt">
+      <div class="r-head">
+        <div><h2>${s.shop_name || 'Drone Teknik Servis'}</h2>
+          <div>${s.shop_phone}</div><div style="white-space:pre-wrap">${s.shop_address}</div></div>
+        <div><div class="r-code">${r.code}</div><div>Servis formu</div><div>${fmtDate(r.received_at, false)}</div></div>
+      </div>
+      <dl class="r-grid" style="margin-top:0">
+        ${dd('Müşteri', r.customer)}${dd('Telefon', r.phone)}
+        ${dd('Cihaz', r.device)}${dd('Seri no', r.serial)}
+        ${dd('Geliş tarihi', fmtDate(r.received_at, false))}${dd('Teslim tarihi', fmtDate(r.delivered_at, false))}
+        ${dd('Şikâyet', r.problem, true)}
+        ${r.diagnosis ? dd('Tespit / yapılan işlem', r.diagnosis, true) : ''}
+        ${r.notes ? dd('Notlar (aksesuar, hasar)', r.notes, true) : ''}
+      </dl>
+      ${r.parts.length ? html`<table><thead><tr><th>Değişen parça</th><th class="num">Adet</th><th class="num">Birim</th><th class="num">Tutar</th></tr></thead>
+        <tbody>${r.parts.map((p) => html`<tr><td>${p.item_name}</td><td class="num">${fmtNum(p.qty)}</td><td class="num">${fmtMoney(p.unit_price)}</td><td class="num">${fmtMoney(p.qty * p.unit_price)}</td></tr>`)}</tbody></table>` : ''}
+      <div class="r-total">
+        <div><span>İşçilik</span><span class="num">${fmtMoney(r.fee)}</span></div>
+        ${r.parts.length ? html`<div><span>Parçalar</span><span class="num">${fmtMoney(partsTotal)}</span></div>` : ''}
+        <div class="g"><span>Toplam</span><span class="num">${fmtMoney(total)}</span></div>
+        ${r.deposit ? html`<div><span>Alınan kapora</span><span class="num">− ${fmtMoney(r.deposit)}</span></div>
+          <div><b>Kalan</b><b class="num">${r.paid ? 'Ödendi' : fmtMoney(total - r.deposit)}</b></div>` : ''}
+      </div>
+      ${s.receipt_note ? html`<div class="r-note">${s.receipt_note}</div>` : ''}
+      <div class="r-sign"><div>Teslim eden</div><div>Teslim alan</div></div>
+    </div>`);
 }
 
 async function partPicker(repair) {
@@ -1033,71 +1197,212 @@ async function viewMovements(ctx) {
 
 // ============================================================ ayarlar
 async function viewSettings(ctx) {
-  const info = await api('/api/info');
+  const [inf, shop, backups] = await Promise.all([getInfo(), api('/api/settings'), api('/api/backups').catch(() => [])]);
+  const cloud = inf.mode === 'vercel';
   const theme = document.documentElement.dataset.theme || 'auto';
+  const fmtSize = (n) => (n > 1048576 ? `${fmtNum(n / 1048576)} MB` : `${fmtNum(Math.max(1, n / 1024))} KB`);
   if (!ctx.mount(html`
     <div class="page-head"><h1>Ayarlar</h1></div>
-    <div class="grid" style="max-width:720px">
+    <div class="grid" style="max-width:760px">
+      <form class="card form-section" id="shop">
+        <h3>Dükkân bilgileri <em class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">— servis fişinde görünür</em></h3>
+        <div class="fields">
+          <label class="field"><span>Dükkân adı</span><input type="text" name="shop_name" value="${shop.shop_name}" placeholder="ör. Roy Drone Teknik"></label>
+          <label class="field"><span>Telefon</span><input type="tel" name="shop_phone" value="${shop.shop_phone}"></label>
+          <label class="field full"><span>Adres</span><input type="text" name="shop_address" value="${shop.shop_address}"></label>
+          <label class="field full"><span>Fiş alt notu <em>(garanti, teslim koşulları)</em></span>
+            <textarea name="receipt_note" placeholder="ör. Değişen parçalarda 3 ay garanti. 30 gün içinde teslim alınmayan cihazlardan sorumluluk kabul edilmez.">${shop.receipt_note}</textarea></label>
+        </div>
+        <div class="btn-row" style="margin-top:14px"><button class="btn primary">${icon('save')} Kaydet</button></div>
+      </form>
+
       <div class="card form-section"><h3>Görünüm</h3>
         <div class="seg" id="theme">${[['auto', 'Sistem'], ['light', 'Açık'], ['dark', 'Koyu']].map(([k, l]) =>
           html`<label><input type="radio" name="theme" value="${k}" ${theme === k ? 'checked' : ''}><span>${l}</span></label>`)}</div>
       </div>
-      <div class="card form-section"><h3>Telefondan erişim</h3>
-        <p style="margin:0 0 10px">Telefon bu bilgisayarla aynı Wi-Fi ağındaysa tarayıcıya şu adresi yaz:</p>
-        ${info.lan.length ? info.lan.map((u) => html`<div class="note-box mono" style="font-size:16px;margin-bottom:6px">${u}</div>`) : html`<div class="note-box">Ağ bağlantısı bulunamadı.</div>`}
-        <p class="small muted" style="margin:10px 0 0">İpucu: Telefonda tarayıcı menüsünden “Ana ekrana ekle” dersen uygulama gibi açılır.
-          ${info.pin ? 'PIN koruması açık.' : 'Başkalarının erişmesini istemiyorsan start.bat içindeki ROY_PIN satırını düzenleyerek PIN koyabilirsin.'}</p>
+
+      <div class="card form-section"><h3>Toplu ürün ekle (Excel / CSV)</h3>
+        <p style="margin:0 0 12px">Elindeki listeyi Excel'de şablona yapıştır, “CSV (noktalı virgülle ayrılmış)” olarak kaydet ve buradan yükle. Mevcut ürünler silinmez, yenileri eklenir.</p>
+        <div class="btn-row">
+          <button class="btn" id="csv-template">${icon('download')} Şablonu indir</button>
+          <button class="btn primary" id="csv-import">${icon('upload')} CSV yükle</button>
+        </div>
       </div>
-      <div class="card form-section"><h3>Yedekleme</h3>
-        <p style="margin:0 0 12px">Veritabanı her gün otomatik yedeklenir (son 30 gün). Yine de ara ara dosyayı bir flash belleğe / Drive'a kopyalamak iyi fikir.</p>
+
+      ${cloud ? '' : html`<div class="card form-section"><h3>Telefondan erişim</h3>
+        <p style="margin:0 0 10px">Telefon bu bilgisayarla aynı Wi-Fi ağındaysa tarayıcıya şu adresi yaz:</p>
+        ${inf.lan.length ? inf.lan.map((u) => html`<div class="note-box mono" style="font-size:16px;margin-bottom:6px">${u}</div>`) : html`<div class="note-box">Ağ bağlantısı bulunamadı.</div>`}
+        <p class="small muted" style="margin:10px 0 0">İpucu: Tarayıcı menüsünden “Ana ekrana ekle” dersen uygulama gibi açılır.
+          ${inf.pin ? 'PIN koruması açık.' : 'Başkalarının erişmesini istemiyorsan start.bat içindeki ROY_PIN satırıyla PIN koyabilirsin.'}</p>
+      </div>`}
+
+      <div class="card"><div class="form-section" style="padding-bottom:10px"><h3>Yedekleme</h3>
+        <p style="margin:0 0 12px">${cloud
+          ? 'Her gece otomatik yedek alınır (son 30 gün). Ayrıca ara ara bilgisayarına bir yedek indirmen iyi fikir.'
+          : 'Veritabanı her gün otomatik yedeklenir (son 30 gün). Ara ara data klasörünü flash belleğe / Drive\'a kopyala.'}</p>
         <div class="btn-row">
           <a class="btn primary" href="/api/export.json" download>${icon('download')} Yedek indir (JSON)</a>
           <a class="btn" href="/api/export.csv" download>${icon('download')} Excel için (CSV)</a>
           <button class="btn" id="backup-now">${icon('save')} Şimdi yedekle</button>
           <button class="btn danger" id="import">${icon('upload')} Yedekten geri yükle</button>
         </div>
-        <p class="small muted" style="margin:12px 0 0">Veri klasörü: <span class="mono">${info.data}</span> — fotoğraflar <span class="mono">uploads</span>, günlük yedekler <span class="mono">backups</span> içinde.</p>
+        ${cloud ? '' : html`<p class="small muted" style="margin:12px 0 0">Veri klasörü: <span class="mono">${inf.data}</span></p>`}
       </div>
+      ${backups.length ? html`<div class="list" style="border-top:1px solid var(--border)">${backups.slice(0, 10).map((b) => html`
+        <a class="row" href="/api/backups/file?name=${encodeURIComponent(b.name)}" download style="min-height:48px">
+          <div class="grow"><div class="title mono" style="font-weight:500">${b.name}</div><div class="meta">${fmtDate(b.date)} · ${fmtSize(b.size)}</div></div>
+          ${icon('download')}</a>`)}</div>` : ''}
+      </div>
+
+      ${inf.pin ? html`<div class="card form-section"><h3>Oturum</h3>
+        <button class="btn" id="logout">Bu cihazda çıkış yap</button></div>` : ''}
     </div>`)) return;
 
+  const shopForm = $('#shop');
+  shopForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = Object.fromEntries(['shop_name', 'shop_phone', 'shop_address', 'receipt_note'].map((k) => [k, shopForm[k].value]));
+    try { await api('/api/settings', { method: 'PUT', body }); toast('Dükkân bilgileri kaydedildi'); } catch (err) { fail(err); }
+  });
   $('#theme').addEventListener('change', (e) => {
     const v = e.target.value;
     if (v === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = v;
     try { v === 'auto' ? localStorage.removeItem('roy-theme') : localStorage.setItem('roy-theme', v); } catch {}
   });
   $('#backup-now').addEventListener('click', async () => {
-    try { await api('/api/backup', { method: 'POST' }); toast('Yedek alındı'); } catch (e) { fail(e); }
+    try { await api('/api/backup', { method: 'POST' }); toast('Yedek alındı'); render(); } catch (e) { fail(e); }
   });
-  $('#import').addEventListener('click', () => {
-    const input = document.createElement('input');
-    input.type = 'file'; input.accept = '.json,application/json';
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      let data;
-      try { data = JSON.parse(await file.text()); } catch { return toast('Dosya okunamadı', true); }
-      if (!(await confirmModal('Yedekten geri yüklensin mi?', `Mevcut tüm kayıtlar silinip “${file.name}” içindeki ${data.items?.length ?? 0} ürün yüklenecek. (Önce otomatik yedek alınır.)`, 'Geri yükle'))) return;
-      try { const r = await api('/api/import', { method: 'POST', body: data }); invalidate(); toast(`${r.items} ürün yüklendi`); go('#/'); }
-      catch (e) { fail(e); }
-    };
-    input.click();
+  $('#logout')?.addEventListener('click', async () => {
+    await api('/api/logout', { method: 'POST' }).catch(() => {});
+    info = null; invalidate(); viewLogin();
   });
+  $('#csv-template').addEventListener('click', () => {
+    const rows = [CSV_HEADERS.map((h) => h[0]).join(';'),
+      'Mavic 3 ön sol motor;Parça;Motor;DJI;;Mavic 3, Mavic 3 Classic;;Sıfır;2;adet;1;Raf A / Kutu 2;850;1400;AliExpress;',
+      'M2x6 vida;Sarf;Vida / somun;;;;;Sıfır;200;adet;50;Çekmece 1;0;0;;'];
+    downloadFile('roy-envanter-sablon.csv', '﻿' + rows.join('\r\n'), 'text/csv');
+  });
+  $('#csv-import').addEventListener('click', () => pickFile('.csv,text/csv', async (file) => {
+    let items;
+    try { items = csvToItems(await file.text()); } catch (e) { return toast(e.message, true); }
+    if (!items.length) return toast('Dosyada ürün bulunamadı', true);
+    const preview = items.slice(0, 5).map((i) => `• ${i.name} — ${fmtNum(i.quantity ?? 1)} ${i.unit || 'adet'}`).join('\n');
+    const ok = await confirmModal(`${items.length} ürün eklensin mi?`,
+      raw(`<span style="white-space:pre-line">${esc(preview)}${items.length > 5 ? `\n… ve ${items.length - 5} ürün daha` : ''}</span>`), 'Ekle', false);
+    if (!ok) return;
+    try { const r = await api('/api/items/bulk', { method: 'POST', body: { items } }); invalidate(); toast(`${r.count} ürün eklendi`); go('#/envanter'); }
+    catch (e) { fail(e); }
+  }));
+  $('#import').addEventListener('click', () => pickFile('.json,application/json', async (file) => {
+    let data;
+    try { data = JSON.parse(await file.text()); } catch { return toast('Dosya okunamadı', true); }
+    if (!(await confirmModal('Yedekten geri yüklensin mi?', `Mevcut tüm kayıtlar silinip “${file.name}” içindeki ${data.items?.length ?? 0} ürün yüklenecek. (Önce otomatik yedek alınır.)`, 'Geri yükle'))) return;
+    try { const r = await api('/api/import', { method: 'POST', body: data }); invalidate(); toast(`${r.items} ürün yüklendi`); go('#/'); }
+    catch (e) { fail(e); }
+  }));
+}
+
+// ------------------------------------------------------------ dosya & CSV yardımcıları
+function pickFile(accept, onFile) {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = accept;
+  input.onchange = () => { const f = input.files?.[0]; if (f) onFile(f); };
+  input.click();
+}
+
+function downloadFile(name, content, type) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Şablon başlıkları (ilk ad) ve kabul edilen eş anlamlılar; dışa aktarılan CSV de geri yüklenebilir
+const CSV_HEADERS = [
+  ['Ad', 'name', ['ad', 'urun adi', 'urun', 'isim', 'name']],
+  ['Tür', 'kind', ['tur', 'kind', 'tip']],
+  ['Kategori', 'category', ['kategori', 'category']],
+  ['Marka', 'brand', ['marka', 'brand']],
+  ['Model', 'model', ['model', 'parca no', 'model / parca no']],
+  ['Uyumlu', 'compatible', ['uyumlu', 'uyumlu modeller', 'compatible']],
+  ['Seri No', 'serial', ['seri no', 'seri', 'serial']],
+  ['Durum', 'condition', ['durum', 'condition']],
+  ['Miktar', 'quantity', ['miktar', 'adet', 'stok', 'quantity']],
+  ['Birim', 'unit', ['birim', 'unit']],
+  ['Min. Stok', 'min_quantity', ['min. stok', 'min stok', 'minimum', 'min_quantity']],
+  ['Konum', 'location', ['konum', 'raf', 'yer', 'location']],
+  ['Alış', 'purchase_price', ['alis', 'alis fiyati', 'maliyet', 'purchase_price']],
+  ['Satış', 'sale_price', ['satis', 'satis fiyati', 'fiyat', 'sale_price']],
+  ['Kaynak', 'source', ['kaynak', 'nereden', 'source']],
+  ['Not', 'notes', ['not', 'notlar', 'aciklama', 'notes']],
+  ['Statü', 'status', ['statu', 'status']],
+];
+
+function parseCsv(text) {
+  text = text.replace(/^﻿/, '');
+  const first = text.split(/\r?\n/, 1)[0];
+  const delim = (first.match(/;/g) || []).length >= (first.match(/,/g) || []).length ? ';' : (first.includes('\t') ? '\t' : ',');
+  const rows = []; let row = [], field = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === delim) { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); rows.push(row); row = []; field = '';
+    } else field += c;
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((v) => v.trim()));
+}
+
+function csvToItems(text) {
+  const rows = parseCsv(text);
+  if (rows.length < 2) throw new Error('Dosyada başlık satırı ve en az bir ürün olmalı');
+  const keyOf = (h) => CSV_HEADERS.find(([, , alts]) => alts.includes(norm(h).trim()))?.[1];
+  const keys = rows[0].map(keyOf);
+  if (!keys.includes('name')) throw new Error('“Ad” sütunu bulunamadı. Şablonu indirip onu kullan.');
+  const fromLabel = (map, v) => {
+    const n = norm(v).trim();
+    return Object.entries(map).find(([k, m]) => k === n || norm(m.label) === n)?.[0];
+  };
+  const nums = ['quantity', 'min_quantity', 'purchase_price', 'sale_price'];
+  return rows.slice(1).map((r) => {
+    const o = {};
+    keys.forEach((k, i) => { if (k && r[i] != null && r[i].trim() !== '') o[k] = r[i].trim(); });
+    for (const k of nums) if (k in o) o[k] = parseNum(o[k]);
+    if (o.kind) o.kind = fromLabel(KIND, o.kind) || 'parca';
+    if (o.condition) o.condition = fromLabel(CONDITION, o.condition) || 'yeni';
+    if (o.status) o.status = fromLabel(STATUS, o.status) || 'stokta';
+    return o;
+  }).filter((o) => o.name);
 }
 
 // ============================================================ etiket
 async function viewLabels(ctx) {
   const ids = new Set((ctx.query.get('ids') || '').split(',').map(Number).filter(Boolean));
-  const items = (await getItems()).filter((i) => ids.has(i.id));
+  const [all, inf] = await Promise.all([getItems(), getInfo()]);
+  const items = all.filter((i) => ids.has(i.id));
+  // Bilgisayardan (localhost) yazdırılırsa QR, telefonun açabileceği ağ adresini göstersin
+  const base = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && inf.lan?.[0] ? inf.lan[0] : location.origin;
+  const qr = (i) => `/api/qr.svg?text=${encodeURIComponent(`${base}/#/urun/${i.id}`)}`;
   ctx.mount(html`
     <div class="no-print">
       <a class="back" href="javascript:history.back()">${icon('back')} Geri</a>
-      <div class="page-head"><h1>Etiket yazdır<div class="sub">${items.length} etiket · 62×29 mm (etiket yazıcısı ya da A4'e kesip yapıştır)</div></h1>
+      <div class="page-head"><h1>Etiket yazdır<div class="sub">${items.length} etiket · 62×29 mm · QR'ı telefon kamerasıyla okutunca ürün sayfası açılır</div></h1>
         <button class="btn primary" onclick="print()">${icon('printer')} Yazdır</button></div>
     </div>
     <div class="labels">${items.map((i) => html`<div class="label-card">
-      <div class="l-name">${i.name}</div>
-      <div class="l-sku">${i.sku}</div>
-      <div class="l-meta"><span>${i.location}</span><span>${i.sale_price ? fmtMoney(i.sale_price) : ''}</span></div>
+      <img class="l-qr" src="${qr(i)}" alt="">
+      <div class="l-body">
+        <div class="l-name">${i.name}</div>
+        <div class="l-sku">${i.sku}</div>
+        <div class="l-meta"><span>${i.location}</span><span>${i.sale_price ? fmtMoney(i.sale_price) : ''}</span></div>
+      </div>
     </div>`)}</div>`);
 }
 

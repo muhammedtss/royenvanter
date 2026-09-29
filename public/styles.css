@@ -21,6 +21,8 @@
   --info: #2a7de1;
   --info-soft: #e5f0fd;
   --shadow: 0 1px 2px rgba(16, 19, 23, .06), 0 4px 16px rgba(16, 19, 23, .06);
+  --c-sales: #e8650a;
+  --c-repair: #2a7de1;
   --radius: 12px;
   --radius-sm: 8px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -51,6 +53,8 @@
     --info: #5aa9ff;
     --info-soft: #152a42;
     --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 20px rgba(0, 0, 0, .25);
+    --c-sales: #e0600c;
+    --c-repair: #4696f0;
     color-scheme: dark;
   }
 }
@@ -76,6 +80,8 @@
   --info: #5aa9ff;
   --info-soft: #152a42;
   --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 20px rgba(0, 0, 0, .25);
+  --c-sales: #e0600c;
+  --c-repair: #4696f0;
   color-scheme: dark;
 }
 
@@ -188,6 +194,56 @@ svg.i { width: 20px; height: 20px; flex: none; stroke: currentColor; fill: none;
 .stat .hint { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 .stat.accent .value { color: var(--accent); }
 .stat.alert .value { color: var(--danger); }
+
+/* ---------- grafik */
+.chart-legend { display: flex; gap: 16px; font-size: 13px; color: var(--text-2); margin-bottom: 6px; flex-wrap: wrap; }
+.chart-legend span, .chart-tip div { display: inline-flex; align-items: center; gap: 6px; }
+.chart-legend i, .chart-tip i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+.chart-wrap { position: relative; }
+.chart-wrap svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart-wrap .gl { stroke: var(--border); stroke-width: 1; }
+.chart-wrap .axis { stroke: var(--border-strong); stroke-width: 1; }
+.chart-wrap .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart-wrap .tick.cur { fill: var(--text); font-weight: 650; }
+.chart-wrap .val { fill: var(--text-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart-wrap .hit { fill: transparent; cursor: default; }
+.chart-wrap .hit.on { fill: var(--text); fill-opacity: .05; }
+.chart-tip {
+  position: absolute; pointer-events: none; min-width: 190px; padding: 10px 12px; border-radius: 10px; font-size: 13px;
+  background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.chart-tip div { display: flex; }
+.chart-tip div span { margin-left: auto; padding-left: 14px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text); }
+.chart-empty { position: absolute; inset: 0 0 30px 58px; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--muted); font-size: 13px; padding: 0 16px; }
+.chart-table { margin-top: 8px; font-size: 13px; }
+.chart-table summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.chart-table table { width: 100%; border-collapse: collapse; margin-top: 8px; font-variant-numeric: tabular-nums; }
+.chart-table th, .chart-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+.chart-table th:first-child, .chart-table td:first-child { text-align: left; }
+.chart-table th { color: var(--muted); font-weight: 600; }
+.chart-table { overflow-x: auto; }
+
+/* ---------- servis fişi */
+.receipt { background: #fff; color: #111; max-width: 780px; padding: 28px 32px; border-radius: var(--radius); border: 1px solid var(--border); font-size: 13.5px; }
+.receipt h2 { font-size: 20px; }
+.receipt .r-head { display: flex; justify-content: space-between; gap: 16px; border-bottom: 2px solid #111; padding-bottom: 12px; margin-bottom: 14px; }
+.receipt .r-code { font-family: var(--mono); font-size: 18px; font-weight: 700; text-align: right; }
+.receipt .r-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 24px; margin-bottom: 14px; }
+.receipt .r-grid dt { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #555; font-weight: 700; }
+.receipt .r-grid dd { margin: 2px 0 0; white-space: pre-wrap; }
+.receipt .r-grid .full { grid-column: 1 / -1; }
+.receipt table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; }
+.receipt th, .receipt td { border-bottom: 1px solid #ccc; padding: 6px 4px; text-align: left; }
+.receipt th { font-size: 11px; text-transform: uppercase; color: #555; }
+.receipt .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.receipt .r-total { margin-left: auto; width: 260px; }
+.receipt .r-total div { display: flex; justify-content: space-between; padding: 3px 0; }
+.receipt .r-total .g { font-weight: 800; font-size: 16px; border-top: 2px solid #111; margin-top: 4px; padding-top: 6px; }
+.receipt .r-note { font-size: 11.5px; color: #444; border-top: 1px solid #ccc; margin-top: 16px; padding-top: 10px; white-space: pre-wrap; }
+.receipt .r-sign { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 36px; }
+.receipt .r-sign div { border-top: 1px solid #111; padding-top: 6px; font-size: 12px; text-align: center; }
+@media (max-width: 600px) { .receipt { padding: 18px; } .receipt .r-grid { grid-template-columns: 1fr; } }
 
 /* ---------- listeler */
 .list { display: flex; flex-direction: column; }
@@ -406,15 +462,18 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 /* ---------- etiket baskısı */
 .labels { display: flex; flex-wrap: wrap; gap: 8px; }
 .label-card {
-  width: 62mm; height: 29mm; border: 1px dashed var(--border-strong); border-radius: 4px; padding: 2.5mm 3mm;
-  display: flex; flex-direction: column; justify-content: space-between; background: #fff; color: #000; overflow: hidden;
+  width: 62mm; height: 29mm; border: 1px dashed var(--border-strong); border-radius: 4px; padding: 2.5mm;
+  display: flex; gap: 2.5mm; background: #fff; color: #000; overflow: hidden;
 }
+.label-card .l-qr { width: 24mm; height: 24mm; flex: none; }
+.label-card .l-body { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: space-between; }
 .label-card .l-name { font-weight: 700; font-size: 11pt; line-height: 1.15; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.label-card .l-sku { font-family: var(--mono); font-size: 15pt; font-weight: 700; letter-spacing: .04em; }
+.label-card .l-sku { font-family: var(--mono); font-size: 13pt; font-weight: 700; letter-spacing: .02em; }
 .label-card .l-meta { font-size: 8pt; display: flex; justify-content: space-between; gap: 4px; }
 @media print {
   body { background: #fff; }
   .sidebar, .tabbar, .fab, .no-print, .toasts { display: none !important; }
   .main { padding: 0; max-width: none; }
   .label-card { border: 1px solid #000; break-inside: avoid; }
+  .receipt { border: 0; padding: 0; max-width: none; border-radius: 0; }
 }

@@ -4,8 +4,15 @@
   "private": true,
   "description": "Drone tamir ve al-sat işleri için envanter sistemi",
   "type": "module",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "start": "node --no-warnings=ExperimentalWarning server.js"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
+    "@vercel/blob": "^2.8.0",
+    "qrcode": "^1.5.4"
   }
 }

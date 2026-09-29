@@ -13,6 +13,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
+if not exist node_modules (
+  echo Ilk calistirma: gerekli paketler kuruluyor, lutfen bekleyin...
+  call npm install --omit=dev --no-audit --no-fund
+)
+
 start "" /min cmd /c "timeout /t 2 >nul & start http://localhost:3000"
 node --no-warnings=ExperimentalWarning server.js
 pause
