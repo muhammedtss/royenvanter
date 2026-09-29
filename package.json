@@ -1,0 +1,11 @@
+{
+  "name": "roy-envanter",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Drone tamir ve al-sat işleri için envanter sistemi",
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning server.js"
+  }
+}
